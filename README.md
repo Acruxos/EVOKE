@@ -1,5 +1,5 @@
 # EVOKE
-Uncovering Overfitting in Large Language Model Editing
+[ICLR 2025 Spotlight] Uncovering Overfitting in Large Language Model Editing
 
 
 ## Requirements
@@ -45,14 +45,13 @@ For ROME and MEMIT, we use precomputed Wikipedia stats on GPT-2 XL and GPT-J fro
 If you find this work helpful for your research, please kindly cite it.
 
 ```text
-@misc{zhang2024uncovering,
-      title={Uncovering Overfitting in Large Language Model Editing}, 
-      author={Mengqi Zhang and Xiaotian Ye and Qiang Liu and Pengjie Ren and Shu Wu and Zhumin Chen},
-      year={2024},
-      eprint={2410.07819},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2410.07819}, 
+@inproceedings{
+    zhang2025uncovering,
+    title={Uncovering Overfitting in Large Language Model Editing},
+    author={Mengqi Zhang and Xiaotian Ye and Qiang Liu and Shu Wu and Pengjie Ren and Zhumin Chen},
+    booktitle={The Thirteenth International Conference on Learning Representations},
+    year={2025},
+    url={https://openreview.net/forum?id=t8qcGXaepr}
 }
 ```
 
