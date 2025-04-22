@@ -22,7 +22,7 @@ python -m experiments.evaluate_evoke_main \
     --alg_name=ROME-LTI \
     --model_name=[path/to/your/gpt-j/model] \
     --hparams_fname=gpt-j-6b.json \
-    --ds_name=cf \
+    --ds_name=evoke-main \
     --num_edits=1
 ```
 

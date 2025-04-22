@@ -1,44 +1,33 @@
 import json
 import shutil
-import pickle
 from itertools import islice
 from time import time
 from typing import Tuple, Union
-from sentence_transformers import SentenceTransformer, util
 
 import torch
-import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaForCausalLM, LlamaTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from baselines.ft import FTHyperParams, apply_ft_to_model
 from baselines.mend import MENDHyperParams, MendRewriteExecutor
-from baselines.lora import LoRAHyperParams, apply_lora_to_model
-from baselines.ike import IKEHyperParams, apply_ike_to_model
 from dsets import (
     AttributeSnippets,
     CounterFactDataset,
     MENDQADataset,
     MultiCounterFactDataset,
-    KGDataset,
-    EVOKEMainDataset,
     get_tfidf_vectorizer,
 )
 from experiments.py.eval_utils_counterfact import compute_rewrite_quality_counterfact
 from experiments.py.eval_utils_zsre import compute_rewrite_quality_zsre
-from memit_lti import MEMITLTIHyperParams, apply_memit_lti_to_model
-from rome_lti import ROMELTIHyperParams, apply_rome_lti_to_model
-from glame import GLAMEHyperParams, apply_glame_to_model, v
+from memit import MEMITHyperParams, apply_memit_to_model
+from rome import ROMEHyperParams, apply_rome_to_model
 from util import nethook
 from util.globals import *
 
 ALG_DICT = {
-    "IKE": (IKEHyperParams, apply_ike_to_model),
-    "LORA": (LoRAHyperParams, apply_lora_to_model),
-    "MEMIT-LTI": (MEMITLTIHyperParams, apply_memit_lti_to_model),
-    "ROME-LTI": (ROMELTIHyperParams, apply_rome_lti_to_model),
+    "MEMIT": (MEMITHyperParams, apply_memit_to_model),
+    "ROME": (ROMEHyperParams, apply_rome_to_model),
     "FT": (FTHyperParams, apply_ft_to_model),
     "MEND": (MENDHyperParams, MendRewriteExecutor().apply_to_model),
-    "GLAME": (GLAMEHyperParams, apply_glame_to_model),
 }
 
 DS_DICT = {
@@ -93,7 +82,6 @@ def main(
         if continue_from_run is not None
         else HPARAMS_DIR / alg_name / hparams_fname
     )
-
     hparams = params_class.from_json(params_path)
     if not (run_dir / "params.json").exists():
         shutil.copyfile(params_path, run_dir / "params.json")
@@ -102,24 +90,12 @@ def main(
     # Instantiate vanilla model
     if type(model_name) is str:
         print("Instantiating model")
-        if 'llama' in model_name.lower():
-            model = LlamaForCausalLM.from_pretrained(model_name).cuda()
-            tok = LlamaTokenizer.from_pretrained(model_name)
-        # elif 'j' in model_name.lower():
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name, device_map="auto")
-            tok = AutoTokenizer.from_pretrained(model_name)
-        # else:
-        #     model = AutoModelForCausalLM.from_pretrained(
-        #         model_name).to("cuda:1" if alg_name == "LORA" else "cuda")
-        #     tok = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
+        tok = AutoTokenizer.from_pretrained(model_name)
         tok.pad_token = tok.eos_token
     else:
         model, tok = model_name
         model_name = model.config._name_or_path
-
-    v_model = None
 
     # Load data
     print("Loading dataset, attribute snippets, tf-idf data")
@@ -130,61 +106,20 @@ def main(
         assert ds_name != "cf", f"{ds_name} does not support multiple edits"
 
     ds_class, ds_eval_method = DS_DICT[ds_name]
-    ds = ds_class(DATA_DIR, size=dataset_size_limit, tok=tok)
-    graphds = KGDataset(DATA_DIR, size=dataset_size_limit,
-                        tok=tok, ds_name=ds_name)
-
-    if alg_name == "GLAME":
-        n_embed = model.config.n_embd if hasattr(
-            model.config, "n_embed") else model.config.hidden_size
-        print("Initializing RGCN")
-        v_model = v(
-            num_rels=1000,
-            num_nodes=1000,
-            h_dim=int(n_embed*hparams.v_dim_factor),
-            out_dim=n_embed,
-            num_bases=100,
-            num_basis=100,
-            num_hidden_layers=2,
-            dropout=hparams.v_feat_drop,
-            self_loop=True,
-            skip_connect=False,
-            encoder_name='uvrgcn',
-            opn='sub',
-            use_cuda=True,
-            analysis=False)
-
-    if alg_name == "IKE":
-        sentence_model = SentenceTransformer(
-            hparams.sentence_model_name).to("cuda")
-
-        safe_model_name = hparams.sentence_model_name.rsplit('/', 1)[-1]
-        with open(f'{EMBEDDING_DIR}/{safe_model_name}_{type(ds).__name__}.pkl', "rb") as fIn:
-            stored_data = pickle.load(fIn)
+    ds = ds_class(DATA_DIR, tok=tok, size=dataset_size_limit)
 
     # Get cache templates
     cache_template = None
     if use_cache:
-        tmp_ds_name = ds_name
-        if ds_name == "cf-one-hop":
-            tmp_ds_name = "cf"
         cache_template = (
             KV_DIR
             / f"{model_name.replace('/', '_')}_{alg_name}"
-            / f"{tmp_ds_name}_layer_{{}}_clamp_{{}}_case_{{}}.npz"
+            / f"{ds_name}_layer_{{}}_clamp_{{}}_case_{{}}.npz"
         )
         print(f"Will load cache from {cache_template}")
 
     # Iterate through dataset
-    # for (record_chunks, graph_chunks) in chunks(zip(ds, graphds), num_edits):
-
-    zipped_lists = list(zip(ds, graphds))
-
-    # chunk contains multiple (record, graph) pairs now
-    for chunk in chunks(zipped_lists, num_edits):
-        record_chunks = [item[0] for item in chunk]
-        graph_chunks = [item[1] for item in chunk]
-
+    for record_chunks in chunks(ds, num_edits):
         case_result_template = str(run_dir / "{}_edits-case_{}.json")
 
         # Is the chunk already done?
@@ -200,31 +135,12 @@ def main(
 
         # Compute weight changes + record weights that changed
         case_ids = [record["case_id"] for record in record_chunks]
-
-        # args for specific methods
         args_conserve_memory = (
-            dict(return_orig_weights_device=(
-                "cpu" if conserve_memory else "cuda"))
+            dict(return_orig_weights_device=("cpu" if conserve_memory else "cuda"))
             if conserve_memory
             else dict()
         )
-        etc_args = dict(cache_template=cache_template) if any(
-            alg in alg_name for alg in ["ROME", "MEMIT", "GLAME"]) else dict()
-        glame_args = dict(
-            graph_input=[
-                graph_case['triples']
-                for graph_case in graph_chunks
-            ],
-            v_model=v_model
-        ) if any(
-            alg in alg_name for alg in ["GLAME"]) else dict()
-        icl_args = dict(
-            dataset_name=type(ds).__name__
-        ) if any(alg in alg_name for alg in ["LORA", "FT"]) else dict()  # For In-Context Learning Methods
-        ike_args = dict(
-            sentence_model=sentence_model,
-            stored_data=stored_data,
-        ) if any(alg in alg_name for alg in ["IKE"]) else dict()
+        etc_args = dict(cache_template=cache_template) if any(alg in alg_name for alg in ["ROME", "MEMIT"]) else dict()
 
         start = time()
         edited_model, weights_copy = apply_algo(
@@ -237,9 +153,6 @@ def main(
             hparams,
             copy=False,
             return_orig_weights=True,
-            **glame_args,
-            **icl_args,
-            **ike_args,
             **args_conserve_memory,
             **etc_args,
         )
@@ -250,16 +163,10 @@ def main(
         start = time()
         gen_test_vars = [snips, vec]
         for record in record_chunks:
-            out_file = Path(case_result_template.format(
-                num_edits, record["case_id"]))
+            out_file = Path(case_result_template.format(num_edits, record["case_id"]))
             if out_file.exists():
                 print(f"Skipping {out_file}; already exists")
                 continue
-
-            if "IKE" in alg_name:
-                context = edited_model
-                record = process_IKE_record(record=record, context=context)
-
 
             metrics = {
                 "case_id": record["case_id"],
@@ -275,7 +182,7 @@ def main(
                         gen_test_vars
                         if record["case_id"] % generation_test_interval == 0
                         else [None, None]
-                    ),
+                    ),  # Only test generation every generation_test_interval cases
                 ),
             }
 
@@ -289,19 +196,6 @@ def main(
                 nethook.get_parameter(model, k)[...] = v.to("cuda")
 
         print("Evaluation took", time() - start)
-
-
-def process_IKE_record(record: dict, context: str) -> dict:
-    record['requested_rewrite']['prompt'] = context + \
-        record['requested_rewrite']['prompt']
-
-    for case in ['paraphrase_prompts', 'neighborhood_prompts']:
-        for prompt in record[case]:
-            prompt = context+prompt
-
-    print("IKE record processed")
-
-    return record
 
 
 def window(seq, n=2):
@@ -319,7 +213,7 @@ def window(seq, n=2):
 def chunks(arr, n):
     """Yield successive n-sized chunks from arr."""
     for i in range(0, len(arr), n):
-        yield arr[i: i + n]
+        yield arr[i : i + n]
 
 
 if __name__ == "__main__":
@@ -328,8 +222,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--alg_name",
-        choices=["MEMIT", "ROME", "FT", "MEND", "GLAME", "LORA", "IKE"],
-        default="GLAME",
+        choices=["MEMIT", "ROME", "FT", "MEND"],
+        default="ROME",
         help="Editing algorithm to use. Results are saved in results/<alg_name>/<run_id>, "
         "where a new run_id is generated on each run. "
         "If continuing from previous run, specify the run_id in --continue_from_run.",
@@ -337,6 +231,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model_name",
+        choices=["gpt2-medium", "gpt2-large", "gpt2-xl", "EleutherAI/gpt-j-6B"],
         default="gpt2-xl",
         help="Model to edit.",
         required=True,
@@ -398,7 +293,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Use cached k/v pairs",
     )
-    parser.set_defaults(skip_generation_tests=True, conserve_memory=False)
+    parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
     args = parser.parse_args()
 
     main(
